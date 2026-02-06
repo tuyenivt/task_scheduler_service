@@ -1,0 +1,199 @@
+package com.example.taskscheduler.service.handler;
+
+import lombok.Builder;
+import lombok.Data;
+
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * Represents the result of a task execution.
+ * <p>
+ * Contains all information needed to update the task record
+ * and create execution logs.
+ */
+@Data
+@Builder
+public class TaskExecutionResult {
+
+    /**
+     * Whether the execution was successful
+     */
+    private boolean success;
+
+    /**
+     * Error message if failed
+     */
+    private String errorMessage;
+
+    /**
+     * Error type/classification for analysis
+     */
+    private String errorType;
+
+    /**
+     * Stack trace if available
+     */
+    private String stackTrace;
+
+    /**
+     * HTTP status code if applicable
+     */
+    private Integer httpStatusCode;
+
+    /**
+     * Response data from external service
+     */
+    @Builder.Default
+    private Map<String, Object> responseData = new HashMap<>();
+
+    /**
+     * Whether this failure should be retried
+     * Some failures (like validation errors) should not be retried
+     */
+    @Builder.Default
+    private boolean retryable = true;
+
+    /**
+     * Custom next retry delay in milliseconds (overrides default)
+     * Null means use default calculation
+     */
+    private Long customRetryDelayMs;
+
+    /**
+     * Additional notes or context
+     */
+    private String notes;
+
+    /**
+     * Create a success result
+     */
+    public static TaskExecutionResult success() {
+        return TaskExecutionResult.builder().success(true).build();
+    }
+
+    /**
+     * Create a success result with response data
+     */
+    public static TaskExecutionResult success(Map<String, Object> responseData) {
+        return TaskExecutionResult.builder()
+                .success(true)
+                .responseData(responseData != null ? responseData : new HashMap<>())
+                .build();
+    }
+
+    /**
+     * Create a failure result
+     */
+    public static TaskExecutionResult failure(String errorMessage) {
+        return TaskExecutionResult.builder()
+                .success(false)
+                .errorMessage(errorMessage)
+                .retryable(true)
+                .build();
+    }
+
+    /**
+     * Create a failure result with type
+     */
+    public static TaskExecutionResult failure(String errorMessage, String errorType) {
+        return TaskExecutionResult.builder()
+                .success(false)
+                .errorMessage(errorMessage)
+                .errorType(errorType)
+                .retryable(true)
+                .build();
+    }
+
+    /**
+     * Create a failure result from exception
+     */
+    public static TaskExecutionResult failure(Exception e) {
+        return TaskExecutionResult.builder()
+                .success(false)
+                .errorMessage(e.getMessage())
+                .errorType(e.getClass().getSimpleName())
+                .stackTrace(truncateStackTrace(e))
+                .retryable(true)
+                .build();
+    }
+
+    /**
+     * Create a non-retryable failure (permanent failure)
+     */
+    public static TaskExecutionResult permanentFailure(String errorMessage, String errorType) {
+        return TaskExecutionResult.builder()
+                .success(false)
+                .errorMessage(errorMessage)
+                .errorType(errorType)
+                .retryable(false)
+                .build();
+    }
+
+    /**
+     * Create a failure result with HTTP status
+     */
+    public static TaskExecutionResult httpFailure(int statusCode, String errorMessage) {
+        boolean retryable = statusCode >= 500 || statusCode == 408 || statusCode == 429;
+        return TaskExecutionResult.builder()
+                .success(false)
+                .errorMessage(errorMessage)
+                .errorType("HTTP_" + statusCode)
+                .httpStatusCode(statusCode)
+                .retryable(retryable)
+                .build();
+    }
+
+    /**
+     * Truncate stack trace to prevent database overflow
+     */
+    private static String truncateStackTrace(Exception e) {
+        if (e == null) return null;
+
+        var sb = new StringBuilder();
+        sb.append(e.getClass().getName()).append(": ").append(e.getMessage()).append("\n");
+
+        var trace = e.getStackTrace();
+        var maxLines = Math.min(trace.length, 20);
+        for (var i = 0; i < maxLines; i++) {
+            sb.append("\tat ").append(trace[i]).append("\n");
+        }
+        if (trace.length > maxLines) {
+            sb.append("\t... ").append(trace.length - maxLines).append(" more\n");
+        }
+
+        // Limit total length
+        var result = sb.toString();
+        if (result.length() > 4000) {
+            result = result.substring(0, 4000) + "...";
+        }
+        return result;
+    }
+
+    /**
+     * Add response data entry
+     */
+    public TaskExecutionResult withResponseData(String key, Object value) {
+        if (this.responseData == null) {
+            this.responseData = new HashMap<>();
+        }
+        this.responseData.put(key, value);
+        return this;
+    }
+
+    /**
+     * Set custom retry delay
+     */
+    public TaskExecutionResult withCustomRetryDelay(long delayMs) {
+        this.customRetryDelayMs = delayMs;
+        return this;
+    }
+
+    /**
+     * Mark as non-retryable
+     */
+    public TaskExecutionResult nonRetryable() {
+        this.retryable = false;
+        return this;
+    }
+}
