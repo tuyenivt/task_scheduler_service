@@ -1,0 +1,204 @@
+package com.example.taskscheduler.controller;
+
+import com.example.taskscheduler.domain.enums.TaskStatus;
+import com.example.taskscheduler.domain.enums.TaskType;
+import com.example.taskscheduler.dto.*;
+import com.example.taskscheduler.service.TaskManagementService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * REST API controller for task management operations.
+ * <p>
+ * Provides endpoints for:
+ * - Creating tasks
+ * - Retrieving task details and history
+ * - Managing task status (cancel, pause, resume, retry)
+ * - Searching and filtering tasks
+ * - Statistics and health
+ */
+@Slf4j
+@RestController
+@RequiredArgsConstructor
+@RequestMapping("/api/v1/tasks")
+@Tag(name = "Task Management", description = "APIs for managing scheduled tasks")
+public class TaskController {
+
+    private final TaskManagementService taskManagementService;
+
+    // === Task Creation ===
+
+    @PostMapping
+    @Operation(summary = "Create a new task", description = "Create a new scheduled task for execution")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ResponseEntity<ApiResponse<TaskResponse>> createTask(@Valid @RequestBody CreateTaskRequest request) {
+        log.info("API: Create task request for type {} reference {}", request.getTaskType(), request.getReferenceId());
+
+        var response = taskManagementService.createTask(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.success(response, "Task created successfully"));
+    }
+
+    @PostMapping("/batch")
+    @Operation(summary = "Create multiple tasks", description = "Create multiple tasks in a single request")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ResponseEntity<ApiResponse<List<TaskResponse>>> createTasks(@Valid @RequestBody List<CreateTaskRequest> requests) {
+        log.info("API: Batch create {} tasks", requests.size());
+
+        var responses = taskManagementService.createTasks(requests);
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.success(responses, String.format("Created %d tasks", responses.size())));
+    }
+
+    // === Task Retrieval ===
+
+    @GetMapping("/{taskId}")
+    @Operation(summary = "Get task by ID", description = "Retrieve a task by its unique identifier")
+    public ResponseEntity<ApiResponse<TaskResponse>> getTask(
+            @Parameter(description = "Task UUID") @PathVariable UUID taskId,
+            @Parameter(description = "Include execution history")
+            @RequestParam(defaultValue = "false") boolean includeHistory) {
+
+        if (includeHistory) {
+            return taskManagementService.getTaskWithHistory(taskId)
+                    .map(task -> ResponseEntity.ok(ApiResponse.success(task)))
+                    .orElse(ResponseEntity.notFound().build());
+        }
+
+        return taskManagementService.getTask(taskId)
+                .map(task -> ResponseEntity.ok(ApiResponse.success(task)))
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @GetMapping("/reference/{referenceId}")
+    @Operation(summary = "Get tasks by reference", description = "Get all tasks for a specific reference ID")
+    public ResponseEntity<ApiResponse<List<TaskResponse>>> getTasksByReference(
+            @Parameter(description = "Reference ID (e.g., order ID)") @PathVariable String referenceId) {
+
+        var tasks = taskManagementService.getTasksByReference(referenceId);
+        return ResponseEntity.ok(ApiResponse.success(tasks));
+    }
+
+    @GetMapping
+    @Operation(summary = "Search tasks", description = "Search tasks with optional filters")
+    public ResponseEntity<ApiResponse<Page<TaskResponse>>> searchTasks(
+            @Parameter(description = "Task type filter") @RequestParam(required = false) TaskType taskType,
+            @Parameter(description = "Status filter") @RequestParam(required = false) TaskStatus status,
+            @Parameter(description = "Reference ID filter") @RequestParam(required = false) String referenceId,
+            @Parameter(description = "Page number") @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "Page size") @RequestParam(defaultValue = "20") int size,
+            @Parameter(description = "Sort field") @RequestParam(defaultValue = "createdAt") String sortBy,
+            @Parameter(description = "Sort direction") @RequestParam(defaultValue = "DESC") String sortDir) {
+
+        var criteria = TaskSearchCriteria.builder().taskType(taskType).status(status).referenceId(referenceId).build();
+        var sort = Sort.by(Sort.Direction.fromString(sortDir), sortBy);
+        var pageable = PageRequest.of(page, size, sort);
+
+        var tasks = taskManagementService.searchTasks(criteria, pageable);
+        return ResponseEntity.ok(ApiResponse.success(tasks));
+    }
+
+    // === Task Status Management ===
+
+    @PostMapping("/{taskId}/cancel")
+    @Operation(summary = "Cancel a task", description = "Cancel a pending or scheduled task")
+    public ResponseEntity<ApiResponse<TaskResponse>> cancelTask(
+            @Parameter(description = "Task UUID") @PathVariable UUID taskId,
+            @Parameter(description = "Cancellation reason") @RequestParam(required = false) String reason) {
+        log.info("API: Cancel task {} with reason: {}", taskId, reason);
+
+        try {
+            var response = taskManagementService.cancelTask(taskId, reason);
+            return ResponseEntity.ok(ApiResponse.success(response, "Task cancelled successfully"));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{taskId}/pause")
+    @Operation(summary = "Pause a task", description = "Pause a task to prevent execution")
+    public ResponseEntity<ApiResponse<TaskResponse>> pauseTask(@Parameter(description = "Task UUID") @PathVariable UUID taskId) {
+        log.info("API: Pause task {}", taskId);
+
+        try {
+            var response = taskManagementService.pauseTask(taskId);
+            return ResponseEntity.ok(ApiResponse.success(response, "Task paused successfully"));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{taskId}/resume")
+    @Operation(summary = "Resume a paused task", description = "Resume a paused task for execution")
+    public ResponseEntity<ApiResponse<TaskResponse>> resumeTask(@Parameter(description = "Task UUID") @PathVariable UUID taskId) {
+        log.info("API: Resume task {}", taskId);
+
+        try {
+            var response = taskManagementService.resumeTask(taskId);
+            return ResponseEntity.ok(ApiResponse.success(response, "Task resumed successfully"));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{taskId}/retry")
+    @Operation(summary = "Retry a failed task", description = "Schedule a retry for a failed task")
+    public ResponseEntity<ApiResponse<TaskResponse>> retryTask(
+            @Parameter(description = "Task UUID") @PathVariable UUID taskId,
+            @RequestBody(required = false) RetryTaskRequest request) {
+        log.info("API: Retry task {}", taskId);
+
+        try {
+            if (request != null && request.isImmediate()) {
+                var future = taskManagementService.retryTaskNow(taskId);
+                var response = future.join();
+                return ResponseEntity.ok(ApiResponse.success(response, "Task retry executed"));
+            } else {
+                var scheduledTime = request != null ? request.getScheduledTime() : null;
+                var response = taskManagementService.retryTask(taskId, scheduledTime);
+                return ResponseEntity.ok(ApiResponse.success(response, "Task retry scheduled"));
+            }
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    // === Bulk Operations ===
+
+    @PostMapping("/bulk/cancel")
+    @Operation(summary = "Cancel multiple tasks", description = "Cancel multiple tasks at once")
+    public ResponseEntity<ApiResponse<Integer>> cancelTasks(@RequestBody BulkTaskRequest request) {
+        log.info("API: Bulk cancel {} tasks", request.getTaskIds().size());
+
+        var cancelled = taskManagementService.cancelTasks(request.getTaskIds(), request.getReason());
+        return ResponseEntity.ok(ApiResponse.success(cancelled, String.format("Cancelled %d tasks", cancelled)));
+    }
+
+    // === Statistics ===
+
+    @GetMapping("/statistics")
+    @Operation(summary = "Get task statistics", description = "Get aggregated task statistics")
+    public ResponseEntity<ApiResponse<TaskStatistics>> getStatistics() {
+        var stats = taskManagementService.getStatistics();
+        return ResponseEntity.ok(ApiResponse.success(stats));
+    }
+
+    // === Health Check ===
+
+    @GetMapping("/health")
+    @Operation(summary = "Health check", description = "Check if the task scheduler is healthy")
+    public ResponseEntity<ApiResponse<String>> healthCheck() {
+        return ResponseEntity.ok(ApiResponse.success("OK", "Task scheduler is running"));
+    }
+}
