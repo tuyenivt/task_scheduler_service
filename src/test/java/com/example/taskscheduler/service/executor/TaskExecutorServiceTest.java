@@ -1,0 +1,323 @@
+package com.example.taskscheduler.service.executor;
+
+import com.example.taskscheduler.config.MetricsConfig;
+import com.example.taskscheduler.config.TaskSchedulerProperties;
+import com.example.taskscheduler.domain.entity.ScheduledTask;
+import com.example.taskscheduler.domain.entity.TaskExecutionLog;
+import com.example.taskscheduler.domain.enums.TaskPriority;
+import com.example.taskscheduler.domain.enums.TaskStatus;
+import com.example.taskscheduler.domain.enums.TaskType;
+import com.example.taskscheduler.domain.repository.ScheduledTaskRepository;
+import com.example.taskscheduler.domain.repository.TaskExecutionLogRepository;
+import com.example.taskscheduler.service.alert.SlackAlertService;
+import com.example.taskscheduler.service.handler.TaskExecutionResult;
+import com.example.taskscheduler.service.handler.TaskHandler;
+import com.example.taskscheduler.service.handler.TaskHandlerRegistry;
+import io.micrometer.core.instrument.Timer;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.time.Instant;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+@DisplayName("TaskExecutorService Tests")
+class TaskExecutorServiceTest {
+
+    @Mock
+    private ScheduledTaskRepository taskRepository;
+
+    @Mock
+    private TaskExecutionLogRepository executionLogRepository;
+
+    @Mock
+    private TaskHandlerRegistry handlerRegistry;
+
+    @Mock
+    private SlackAlertService slackAlertService;
+
+    @Mock
+    private MetricsConfig metricsConfig;
+
+    @Mock
+    private TaskSchedulerProperties properties;
+
+    @InjectMocks
+    private TaskExecutorService taskExecutorService;
+
+    @Captor
+    private ArgumentCaptor<ScheduledTask> taskCaptor;
+
+    @Captor
+    private ArgumentCaptor<TaskExecutionLog> logCaptor;
+
+    private UUID testTaskId;
+    private ScheduledTask testTask;
+    private TaskHandler mockHandler;
+    private Timer.Sample mockTimerSample;
+
+    @BeforeEach
+    void setUp() {
+        testTaskId = UUID.randomUUID();
+
+        testTask = ScheduledTask.builder()
+                .id(testTaskId)
+                .taskType(TaskType.ORDER_CANCEL)
+                .status(TaskStatus.PROCESSING)
+                .priority(TaskPriority.NORMAL)
+                .referenceId("ORD-12345")
+                .scheduledTime(Instant.now().minusSeconds(60))
+                .retryCount(0)
+                .version(1L)
+                .createdAt(Instant.now())
+                .updatedAt(Instant.now())
+                .build();
+
+        mockHandler = mock(TaskHandler.class);
+        mockTimerSample = mock(Timer.Sample.class);
+    }
+
+    @Nested
+    @DisplayName("executeTask Tests")
+    class ExecuteTaskTests {
+
+        @Test
+        @DisplayName("Should execute task successfully")
+        void shouldExecuteTaskSuccessfully() {
+            // Given
+            when(taskRepository.findById(testTaskId)).thenReturn(Optional.of(testTask));
+            when(metricsConfig.startTaskExecutionTimer()).thenReturn(mockTimerSample);
+            when(executionLogRepository.save(any(TaskExecutionLog.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(handlerRegistry.getHandlerOrThrow(TaskType.ORDER_CANCEL)).thenReturn(mockHandler);
+            when(mockHandler.execute(any())).thenReturn(
+                    TaskExecutionResult.success(Map.of("orderId", "ORD-12345")));
+            when(taskRepository.save(any(ScheduledTask.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            // When
+            boolean result = taskExecutorService.executeTask(testTask);
+
+            // Then
+            assertThat(result).isTrue();
+            verify(taskRepository).save(taskCaptor.capture());
+            ScheduledTask saved = taskCaptor.getValue();
+            assertThat(saved.getStatus()).isEqualTo(TaskStatus.COMPLETED);
+            assertThat(saved.getCompletedAt()).isNotNull();
+            assertThat(saved.getLockedBy()).isNull();
+            assertThat(saved.getLockedUntil()).isNull();
+
+            verify(metricsConfig).recordTaskExecution(eq(mockTimerSample), eq(TaskType.ORDER_CANCEL), eq(true));
+        }
+
+        @Test
+        @DisplayName("Should handle task failure with retry")
+        void shouldHandleTaskFailureWithRetry() {
+            // Given
+            when(properties.getDefaultMaxRetries()).thenReturn(5);
+            when(properties.getDefaultRetryDelayHours()).thenReturn(24);
+            when(taskRepository.findById(testTaskId)).thenReturn(Optional.of(testTask));
+            when(metricsConfig.startTaskExecutionTimer()).thenReturn(mockTimerSample);
+            when(executionLogRepository.save(any(TaskExecutionLog.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(handlerRegistry.getHandlerOrThrow(TaskType.ORDER_CANCEL)).thenReturn(mockHandler);
+            when(mockHandler.execute(any())).thenReturn(
+                    TaskExecutionResult.failure("Service unavailable", "HTTP_503"));
+            when(mockHandler.calculateNextRetryDelayMs(any(), anyInt())).thenReturn(3600000L);
+            when(taskRepository.save(any(ScheduledTask.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            // When
+            boolean result = taskExecutorService.executeTask(testTask);
+
+            // Then
+            assertThat(result).isFalse();
+            verify(taskRepository, atLeastOnce()).save(taskCaptor.capture());
+            ScheduledTask saved = taskCaptor.getValue();
+            assertThat(saved.getStatus()).isEqualTo(TaskStatus.RETRY_PENDING);
+            assertThat(saved.getRetryCount()).isEqualTo(1);
+            assertThat(saved.getScheduledTime()).isAfter(Instant.now().minusSeconds(1));
+            assertThat(saved.getLockedBy()).isNull();
+        }
+
+        @Test
+        @DisplayName("Should handle permanent failure (non-retryable)")
+        void shouldHandlePermanentFailure() {
+            // Given
+            when(taskRepository.findById(testTaskId)).thenReturn(Optional.of(testTask));
+            when(metricsConfig.startTaskExecutionTimer()).thenReturn(mockTimerSample);
+            when(executionLogRepository.save(any(TaskExecutionLog.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(handlerRegistry.getHandlerOrThrow(TaskType.ORDER_CANCEL)).thenReturn(mockHandler);
+            when(mockHandler.execute(any())).thenReturn(
+                    TaskExecutionResult.permanentFailure("Order not found", "ORDER_NOT_FOUND"));
+            when(taskRepository.save(any(ScheduledTask.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            // When
+            boolean result = taskExecutorService.executeTask(testTask);
+
+            // Then
+            assertThat(result).isFalse();
+            verify(taskRepository, atLeastOnce()).save(taskCaptor.capture());
+            ScheduledTask saved = taskCaptor.getValue();
+            assertThat(saved.getStatus()).isEqualTo(TaskStatus.DEAD_LETTER);
+            assertThat(saved.getCompletedAt()).isNotNull();
+            verify(slackAlertService).sendTaskFailureAlert(any(), anyString());
+        }
+
+        @Test
+        @DisplayName("Should handle max retries exceeded")
+        void shouldHandleMaxRetriesExceeded() {
+            // Given
+            testTask.setRetryCount(4); // Already retried 4 times
+            when(properties.getDefaultMaxRetries()).thenReturn(5);
+            when(taskRepository.findById(testTaskId)).thenReturn(Optional.of(testTask));
+            when(metricsConfig.startTaskExecutionTimer()).thenReturn(mockTimerSample);
+            when(executionLogRepository.save(any(TaskExecutionLog.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(handlerRegistry.getHandlerOrThrow(TaskType.ORDER_CANCEL)).thenReturn(mockHandler);
+            when(mockHandler.execute(any())).thenReturn(
+                    TaskExecutionResult.failure("Timeout", "TIMEOUT"));
+            when(taskRepository.save(any(ScheduledTask.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            // When
+            boolean result = taskExecutorService.executeTask(testTask);
+
+            // Then
+            assertThat(result).isFalse();
+            verify(taskRepository, atLeastOnce()).save(taskCaptor.capture());
+            ScheduledTask saved = taskCaptor.getValue();
+            assertThat(saved.getStatus()).isEqualTo(TaskStatus.MAX_RETRIES_EXCEEDED);
+            verify(slackAlertService).sendMaxRetriesExceededAlert(any());
+            verify(metricsConfig).recordMaxRetriesExceeded(TaskType.ORDER_CANCEL);
+        }
+
+        @Test
+        @DisplayName("Should mark expired task")
+        void shouldMarkExpiredTask() {
+            // Given
+            testTask.setExpiresAt(Instant.now().minusSeconds(3600)); // expired 1 hour ago
+            when(taskRepository.findById(testTaskId)).thenReturn(Optional.of(testTask));
+            when(metricsConfig.startTaskExecutionTimer()).thenReturn(mockTimerSample);
+            when(executionLogRepository.save(any(TaskExecutionLog.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(taskRepository.save(any(ScheduledTask.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            // When
+            boolean result = taskExecutorService.executeTask(testTask);
+
+            // Then
+            assertThat(result).isFalse();
+            verify(taskRepository).save(taskCaptor.capture());
+            assertThat(taskCaptor.getValue().getStatus()).isEqualTo(TaskStatus.EXPIRED);
+        }
+
+        @Test
+        @DisplayName("Should return false when task no longer exists")
+        void shouldReturnFalseWhenTaskNotFound() {
+            // Given
+            when(taskRepository.findById(testTaskId)).thenReturn(Optional.empty());
+
+            // When
+            boolean result = taskExecutorService.executeTask(testTask);
+
+            // Then
+            assertThat(result).isFalse();
+            verify(handlerRegistry, never()).getHandlerOrThrow(any());
+        }
+
+        @Test
+        @DisplayName("Should handle validation failure")
+        void shouldHandleValidationFailure() {
+            // Given
+            when(taskRepository.findById(testTaskId)).thenReturn(Optional.of(testTask));
+            when(metricsConfig.startTaskExecutionTimer()).thenReturn(mockTimerSample);
+            when(executionLogRepository.save(any(TaskExecutionLog.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(handlerRegistry.getHandlerOrThrow(TaskType.ORDER_CANCEL)).thenReturn(mockHandler);
+            doThrow(new IllegalArgumentException("Missing required field"))
+                    .when(mockHandler).validate(any());
+            when(taskRepository.save(any(ScheduledTask.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            // When
+            boolean result = taskExecutorService.executeTask(testTask);
+
+            // Then
+            assertThat(result).isFalse();
+            verify(taskRepository, atLeastOnce()).save(taskCaptor.capture());
+            ScheduledTask saved = taskCaptor.getValue();
+            assertThat(saved.getStatus()).isEqualTo(TaskStatus.DEAD_LETTER);
+        }
+
+        @Test
+        @DisplayName("Should handle unexpected exception during execution")
+        void shouldHandleUnexpectedException() {
+            // Given
+            when(properties.getDefaultMaxRetries()).thenReturn(5);
+            when(properties.getDefaultRetryDelayHours()).thenReturn(24);
+            when(taskRepository.findById(testTaskId)).thenReturn(Optional.of(testTask));
+            when(metricsConfig.startTaskExecutionTimer()).thenReturn(mockTimerSample);
+            when(executionLogRepository.save(any(TaskExecutionLog.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(handlerRegistry.getHandlerOrThrow(TaskType.ORDER_CANCEL)).thenReturn(mockHandler);
+            when(mockHandler.execute(any())).thenThrow(new RuntimeException("Unexpected NPE"));
+            when(mockHandler.calculateNextRetryDelayMs(any(), anyInt())).thenReturn(3600000L);
+            when(taskRepository.save(any(ScheduledTask.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            // When
+            boolean result = taskExecutorService.executeTask(testTask);
+
+            // Then
+            assertThat(result).isFalse();
+            verify(metricsConfig).recordTaskExecution(eq(mockTimerSample), eq(TaskType.ORDER_CANCEL), eq(false));
+            verify(metricsConfig).recordTaskFailure(eq(TaskType.ORDER_CANCEL), eq("RuntimeException"));
+        }
+    }
+
+    @Nested
+    @DisplayName("acquireLock Tests")
+    class AcquireLockTests {
+
+        @Test
+        @DisplayName("Should acquire lock successfully")
+        void shouldAcquireLockSuccessfully() {
+            // Given
+            when(properties.getLockDurationMinutes()).thenReturn(30);
+            when(taskRepository.acquireTaskLock(eq(testTaskId), anyString(), any(), eq(1L), any()))
+                    .thenReturn(1);
+
+            // When
+            boolean result = taskExecutorService.acquireLock(testTask);
+
+            // Then
+            assertThat(result).isTrue();
+        }
+
+        @Test
+        @DisplayName("Should fail to acquire lock when already locked")
+        void shouldFailToAcquireLockWhenAlreadyLocked() {
+            // Given
+            when(properties.getLockDurationMinutes()).thenReturn(30);
+            when(taskRepository.acquireTaskLock(eq(testTaskId), anyString(), any(), eq(1L), any()))
+                    .thenReturn(0);
+
+            // When
+            boolean result = taskExecutorService.acquireLock(testTask);
+
+            // Then
+            assertThat(result).isFalse();
+        }
+    }
+}
