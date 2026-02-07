@@ -151,11 +151,23 @@ public class TaskManagementService {
     public Page<TaskResponse> searchTasks(TaskSearchCriteria criteria, Pageable pageable) {
         Page<ScheduledTask> tasks;
 
-        if (criteria.getTaskType() != null && criteria.getStatus() != null) {
+        var hasRef = criteria.getReferenceId() != null && !criteria.getReferenceId().isBlank();
+        var hasType = criteria.getTaskType() != null;
+        var hasStatus = criteria.getStatus() != null;
+
+        if (hasRef && hasType && hasStatus) {
+            tasks = taskRepository.findByReferenceIdAndTaskTypeAndStatus(criteria.getReferenceId(), criteria.getTaskType(), criteria.getStatus(), pageable);
+        } else if (hasRef && hasType) {
+            tasks = taskRepository.findByReferenceIdAndTaskType(criteria.getReferenceId(), criteria.getTaskType(), pageable);
+        } else if (hasRef && hasStatus) {
+            tasks = taskRepository.findByReferenceIdAndStatus(criteria.getReferenceId(), criteria.getStatus(), pageable);
+        } else if (hasRef) {
+            tasks = taskRepository.findByReferenceId(criteria.getReferenceId(), pageable);
+        } else if (hasType && hasStatus) {
             tasks = taskRepository.findByTaskTypeAndStatus(criteria.getTaskType(), criteria.getStatus(), pageable);
-        } else if (criteria.getTaskType() != null) {
+        } else if (hasType) {
             tasks = taskRepository.findByTaskType(criteria.getTaskType(), pageable);
-        } else if (criteria.getStatus() != null) {
+        } else if (hasStatus) {
             tasks = taskRepository.findByStatus(criteria.getStatus(), pageable);
         } else {
             tasks = taskRepository.findAll(pageable);

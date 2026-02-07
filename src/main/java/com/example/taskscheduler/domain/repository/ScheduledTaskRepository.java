@@ -146,6 +146,26 @@ public interface ScheduledTaskRepository extends JpaRepository<ScheduledTask, UU
     List<ScheduledTask> findByReferenceIdOrderByCreatedAtDesc(String referenceId);
 
     /**
+     * Find tasks by reference ID (pageable)
+     */
+    Page<ScheduledTask> findByReferenceId(String referenceId, Pageable pageable);
+
+    /**
+     * Find tasks by reference ID and type
+     */
+    Page<ScheduledTask> findByReferenceIdAndTaskType(String referenceId, TaskType taskType, Pageable pageable);
+
+    /**
+     * Find tasks by reference ID and status
+     */
+    Page<ScheduledTask> findByReferenceIdAndStatus(String referenceId, TaskStatus status, Pageable pageable);
+
+    /**
+     * Find tasks by reference ID, type, and status
+     */
+    Page<ScheduledTask> findByReferenceIdAndTaskTypeAndStatus(String referenceId, TaskType taskType, TaskStatus status, Pageable pageable);
+
+    /**
      * Find tasks by type and status
      */
     Page<ScheduledTask> findByTaskTypeAndStatus(TaskType taskType, TaskStatus status, Pageable pageable);
