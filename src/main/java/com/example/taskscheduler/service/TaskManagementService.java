@@ -6,10 +6,7 @@ import com.example.taskscheduler.domain.enums.TaskStatus;
 import com.example.taskscheduler.domain.enums.TaskType;
 import com.example.taskscheduler.domain.repository.ScheduledTaskRepository;
 import com.example.taskscheduler.domain.repository.TaskExecutionLogRepository;
-import com.example.taskscheduler.dto.CreateTaskRequest;
-import com.example.taskscheduler.dto.TaskResponse;
-import com.example.taskscheduler.dto.TaskSearchCriteria;
-import com.example.taskscheduler.dto.TaskStatistics;
+import com.example.taskscheduler.dto.*;
 import com.example.taskscheduler.exception.DuplicateTaskException;
 import com.example.taskscheduler.exception.InvalidTaskStateException;
 import com.example.taskscheduler.exception.TaskNotFoundException;
@@ -89,20 +86,30 @@ public class TaskManagementService {
     }
 
     /**
-     * Create multiple tasks in a batch
+     * Create multiple tasks in a batch.
+     * Returns both successfully created tasks and per-item errors.
      */
     @Transactional
-    public List<TaskResponse> createTasks(List<CreateTaskRequest> requests) {
-        var responses = new ArrayList<TaskResponse>();
-        for (var request : requests) {
+    public BatchCreateResult createTasks(List<CreateTaskRequest> requests) {
+        var created = new ArrayList<TaskResponse>();
+        var errors = new ArrayList<BatchCreateResult.BatchItemError>();
+
+        for (int i = 0; i < requests.size(); i++) {
+            var request = requests.get(i);
             try {
-                responses.add(createTask(request));
+                created.add(createTask(request));
             } catch (Exception e) {
                 log.error("Failed to create task for reference {}: {}",
                         request.getReferenceId(), e.getMessage());
+                errors.add(BatchCreateResult.BatchItemError.builder()
+                        .index(i)
+                        .referenceId(request.getReferenceId())
+                        .error(e.getMessage())
+                        .build());
             }
         }
-        return responses;
+
+        return BatchCreateResult.builder().created(created).errors(errors).build();
     }
 
     // === Task Retrieval ===

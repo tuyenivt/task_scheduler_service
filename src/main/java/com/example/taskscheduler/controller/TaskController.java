@@ -15,6 +15,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -31,6 +32,7 @@ import java.util.UUID;
  * - Statistics and health
  */
 @Slf4j
+@Validated
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/v1/tasks")
@@ -54,11 +56,15 @@ public class TaskController {
     @PostMapping("/batch")
     @Operation(summary = "Create multiple tasks", description = "Create multiple tasks in a single request")
     @ResponseStatus(HttpStatus.CREATED)
-    public ResponseEntity<ApiResponse<List<TaskResponse>>> createTasks(@Valid @RequestBody List<CreateTaskRequest> requests) {
+    public ResponseEntity<ApiResponse<BatchCreateResult>> createTasks(@Valid @RequestBody List<@Valid CreateTaskRequest> requests) {
         log.info("API: Batch create {} tasks", requests.size());
 
-        var responses = taskManagementService.createTasks(requests);
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.success(responses, String.format("Created %d tasks", responses.size())));
+        var result = taskManagementService.createTasks(requests);
+        var message = String.format("Created %d tasks", result.getCreated().size());
+        if (!result.getErrors().isEmpty()) {
+            message += String.format(", %d failed", result.getErrors().size());
+        }
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.success(result, message));
     }
 
     // === Task Retrieval ===
@@ -103,7 +109,8 @@ public class TaskController {
 
         var criteria = TaskSearchCriteria.builder().taskType(taskType).status(status).referenceId(referenceId).build();
         var sort = Sort.by(Sort.Direction.fromString(sortDir), sortBy);
-        var pageable = PageRequest.of(page, size, sort);
+        var safeSize = Math.min(size, 100);
+        var pageable = PageRequest.of(page, safeSize, sort);
 
         var tasks = taskManagementService.searchTasks(criteria, pageable);
         return ResponseEntity.ok(ApiResponse.success(tasks));
@@ -162,7 +169,7 @@ public class TaskController {
 
     @PostMapping("/bulk/cancel")
     @Operation(summary = "Cancel multiple tasks", description = "Cancel multiple tasks at once")
-    public ResponseEntity<ApiResponse<Integer>> cancelTasks(@RequestBody BulkTaskRequest request) {
+    public ResponseEntity<ApiResponse<Integer>> cancelTasks(@Valid @RequestBody BulkTaskRequest request) {
         log.info("API: Bulk cancel {} tasks", request.getTaskIds().size());
 
         var cancelled = taskManagementService.cancelTasks(request.getTaskIds(), request.getReason());
