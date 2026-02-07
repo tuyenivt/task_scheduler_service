@@ -121,12 +121,11 @@ class TaskSchedulerIntegrationTest {
                             .content(objectMapper.writeValueAsString(request)))
                     .andExpect(status().isCreated());
 
-            // Second creation with same reference should return existing
+            // Second creation with same reference should return 409 Conflict
             mockMvc.perform(post("/api/v1/tasks")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(request)))
-                    .andExpect(status().isCreated())
-                    .andExpect(jsonPath("$.data.referenceId").value("PAY-DUP-001"));
+                    .andExpect(status().isConflict());
 
             // Should still only have 1 task
             assertThat(taskRepository.count()).isEqualTo(1);
@@ -152,7 +151,7 @@ class TaskSchedulerIntegrationTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(requests)))
                     .andExpect(status().isCreated())
-                    .andExpect(jsonPath("$.data", hasSize(2)));
+                    .andExpect(jsonPath("$.data.created", hasSize(2)));
 
             assertThat(taskRepository.count()).isEqualTo(2);
         }
@@ -233,7 +232,7 @@ class TaskSchedulerIntegrationTest {
             taskRepository.save(task);
 
             mockMvc.perform(post("/api/v1/tasks/{taskId}/cancel", task.getId()))
-                    .andExpect(status().isBadRequest());
+                    .andExpect(status().isConflict());
         }
 
         @Test

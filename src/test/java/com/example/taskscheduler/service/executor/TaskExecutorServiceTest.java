@@ -72,6 +72,9 @@ class TaskExecutorServiceTest {
 
     @BeforeEach
     void setUp() {
+        // Trigger @PostConstruct manually since Mockito doesn't call it
+        taskExecutorService.initInstanceId();
+
         testTaskId = UUID.randomUUID();
 
         testTask = ScheduledTask.builder()

@@ -1,6 +1,5 @@
 package com.example.taskscheduler.service;
 
-import com.example.taskscheduler.config.TaskSchedulerProperties;
 import com.example.taskscheduler.domain.entity.ScheduledTask;
 import com.example.taskscheduler.domain.enums.TaskPriority;
 import com.example.taskscheduler.domain.enums.TaskStatus;
@@ -9,6 +8,9 @@ import com.example.taskscheduler.domain.repository.ScheduledTaskRepository;
 import com.example.taskscheduler.domain.repository.TaskExecutionLogRepository;
 import com.example.taskscheduler.dto.CreateTaskRequest;
 import com.example.taskscheduler.dto.TaskResponse;
+import com.example.taskscheduler.exception.DuplicateTaskException;
+import com.example.taskscheduler.exception.InvalidTaskStateException;
+import com.example.taskscheduler.exception.TaskNotFoundException;
 import com.example.taskscheduler.mapper.TaskMapper;
 import com.example.taskscheduler.service.executor.TaskPollingService;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,9 +46,6 @@ class TaskManagementServiceTest {
 
     @Mock
     private TaskPollingService taskPollingService;
-
-    @Mock
-    private TaskSchedulerProperties properties;
 
     @Mock
     private TaskMapper taskMapper;
@@ -123,8 +122,8 @@ class TaskManagementServiceTest {
         }
 
         @Test
-        @DisplayName("Should prevent duplicate task when enabled")
-        void shouldPreventDuplicateTask() {
+        @DisplayName("Should throw DuplicateTaskException when duplicate detected")
+        void shouldThrowDuplicateTaskException() {
             // Given
             CreateTaskRequest request = CreateTaskRequest.builder()
                     .taskType(TaskType.ORDER_CANCEL)
@@ -134,15 +133,10 @@ class TaskManagementServiceTest {
 
             when(taskRepository.existsActiveTaskForReference("ORD-12345", TaskType.ORDER_CANCEL))
                     .thenReturn(true);
-            when(taskRepository.findActiveTaskForReference("ORD-12345", TaskType.ORDER_CANCEL))
-                    .thenReturn(Optional.of(testTask));
-            when(taskMapper.toResponse(testTask)).thenReturn(testTaskResponse);
 
-            // When
-            TaskResponse response = taskManagementService.createTask(request);
-
-            // Then
-            assertThat(response).isNotNull();
+            // When/Then
+            assertThatThrownBy(() -> taskManagementService.createTask(request))
+                    .isInstanceOf(DuplicateTaskException.class);
             verify(taskRepository, never()).save(any());
         }
 
@@ -201,8 +195,7 @@ class TaskManagementServiceTest {
 
             // When/Then
             assertThatThrownBy(() -> taskManagementService.cancelTask(testTaskId, "reason"))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("terminal state");
+                    .isInstanceOf(InvalidTaskStateException.class);
         }
 
         @Test
@@ -215,8 +208,18 @@ class TaskManagementServiceTest {
 
             // When/Then
             assertThatThrownBy(() -> taskManagementService.cancelTask(testTaskId, "reason"))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("being processed");
+                    .isInstanceOf(InvalidTaskStateException.class);
+        }
+
+        @Test
+        @DisplayName("Should throw TaskNotFoundException when task does not exist")
+        void shouldThrowTaskNotFoundExceptionOnCancel() {
+            // Given
+            when(taskRepository.findById(testTaskId)).thenReturn(Optional.empty());
+
+            // When/Then
+            assertThatThrownBy(() -> taskManagementService.cancelTask(testTaskId, "reason"))
+                    .isInstanceOf(TaskNotFoundException.class);
         }
 
         @Test
