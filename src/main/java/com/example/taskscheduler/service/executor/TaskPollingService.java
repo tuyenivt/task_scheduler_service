@@ -3,6 +3,7 @@ package com.example.taskscheduler.service.executor;
 import com.example.taskscheduler.config.TaskSchedulerProperties;
 import com.example.taskscheduler.domain.entity.ScheduledTask;
 import com.example.taskscheduler.domain.repository.ScheduledTaskRepository;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -13,8 +14,8 @@ import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.stream.Collectors;
 
 /**
  * Service responsible for polling pending tasks and dispatching them for execution.
@@ -38,6 +39,7 @@ public class TaskPollingService {
     private final ExecutorService virtualThreadExecutor;
 
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
+    private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
 
     public TaskPollingService(ScheduledTaskRepository taskRepository, TaskExecutorService taskExecutorService, TaskSchedulerProperties properties,
                               @Qualifier("virtualThreadExecutor") ExecutorService virtualThreadExecutor) {
@@ -54,9 +56,31 @@ public class TaskPollingService {
      * but the actual task processing is distributed across all instances
      * through the SKIP LOCKED mechanism.
      */
+    @PreDestroy
+    void shutdown() {
+        log.info("Shutting down task polling service, waiting for in-flight tasks...");
+        shuttingDown.set(true);
+        virtualThreadExecutor.shutdown();
+        try {
+            if (!virtualThreadExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                log.warn("Forced shutdown of virtual thread executor after 30s timeout");
+                virtualThreadExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            virtualThreadExecutor.shutdownNow();
+        }
+        log.info("Task polling service shut down");
+    }
+
     @Scheduled(fixedDelayString = "${task-scheduler.poll-interval-ms:30000}")
     @SchedulerLock(name = "taskPollingJob", lockAtLeastFor = "10s", lockAtMostFor = "5m")
     public void pollAndProcessTasks() {
+        if (shuttingDown.get()) {
+            log.info("Shutdown in progress, skipping poll cycle");
+            return;
+        }
+
         if (!isRunning.compareAndSet(false, true)) {
             log.debug("Previous polling cycle still running, skipping");
             return;
