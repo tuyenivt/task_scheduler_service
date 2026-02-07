@@ -10,6 +10,7 @@ import com.example.taskscheduler.domain.repository.TaskExecutionLogRepository;
 import com.example.taskscheduler.service.alert.SlackAlertService;
 import com.example.taskscheduler.service.handler.TaskExecutionResult;
 import com.example.taskscheduler.service.handler.TaskHandlerRegistry;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -52,18 +53,18 @@ public class TaskExecutorService {
 
     private String instanceId;
 
-    /**
-     * Get unique instance ID for this service instance
-     */
-    private String getInstanceId() {
-        if (instanceId == null) {
-            try {
-                var host = InetAddress.getLocalHost().getHostName();
-                instanceId = host + "-" + ProcessHandle.current().pid();
-            } catch (Exception e) {
-                instanceId = hostname + "-" + UUID.randomUUID().toString().substring(0, 8);
-            }
+    @PostConstruct
+    void initInstanceId() {
+        try {
+            var host = InetAddress.getLocalHost().getHostName();
+            instanceId = host + "-" + ProcessHandle.current().pid();
+        } catch (Exception e) {
+            instanceId = hostname + "-" + UUID.randomUUID().toString().substring(0, 8);
         }
+        log.info("TaskExecutorService instance ID: {}", instanceId);
+    }
+
+    private String getInstanceId() {
         return instanceId;
     }
 
