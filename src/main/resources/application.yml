@@ -86,6 +86,7 @@ slack:
   webhook-url: ${SLACK_WEBHOOK_URL:}
   channel: ${SLACK_CHANNEL:#oncall-alerts}
   enabled: ${SLACK_ENABLED:false}
+  dashboard-base-url: ${DASHBOARD_BASE_URL:https://admin.example.com}
 
 resilience4j:
   circuitbreaker:

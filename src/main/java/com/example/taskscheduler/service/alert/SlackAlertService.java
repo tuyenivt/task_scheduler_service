@@ -1,5 +1,6 @@
 package com.example.taskscheduler.service.alert;
 
+import com.example.taskscheduler.config.SlackProperties;
 import com.example.taskscheduler.domain.entity.ScheduledTask;
 import com.example.taskscheduler.domain.enums.TaskPriority;
 import com.slack.api.Slack;
@@ -29,19 +30,15 @@ public class SlackAlertService {
 
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(ZoneId.systemDefault());
 
-    @Value("${slack.webhook-url:}")
-    private String webhookUrl;
-
-    @Value("${slack.channel:#oncall-alerts}")
-    private String channel;
-
-    @Value("${slack.enabled:true}")
-    private boolean enabled;
+    private final SlackProperties slackProperties;
+    private final Slack slack = Slack.getInstance();
 
     @Value("${spring.application.name:task-scheduler}")
     private String applicationName;
 
-    private final Slack slack = Slack.getInstance();
+    public SlackAlertService(SlackProperties slackProperties) {
+        this.slackProperties = slackProperties;
+    }
 
     /**
      * Send alert for max retries exceeded.
@@ -49,14 +46,14 @@ public class SlackAlertService {
      */
     @Async
     public void sendMaxRetriesExceededAlert(ScheduledTask task) {
-        if (!enabled || webhookUrl == null || webhookUrl.isBlank()) {
+        if (!slackProperties.isEnabled() || slackProperties.getWebhookUrl() == null || slackProperties.getWebhookUrl().isBlank()) {
             log.warn("Slack alerting is disabled or webhook URL not configured. Task {} reached max retries but no alert was sent.", task.getId());
             return;
         }
 
         try {
             var payload = buildMaxRetriesPayload(task);
-            var response = slack.send(webhookUrl, payload);
+            var response = slack.send(slackProperties.getWebhookUrl(), payload);
 
             if (response.getCode() != 200) {
                 log.error("Failed to send Slack alert. Response code: {}, body: {}", response.getCode(), response.getBody());
@@ -73,14 +70,14 @@ public class SlackAlertService {
      */
     @Async
     public void sendErrorAlert(String title, String message, String details) {
-        if (!enabled || webhookUrl == null || webhookUrl.isBlank()) {
+        if (!slackProperties.isEnabled() || slackProperties.getWebhookUrl() == null || slackProperties.getWebhookUrl().isBlank()) {
             log.warn("Slack alerting disabled. Error alert not sent: {}", title);
             return;
         }
 
         try {
             var payload = Payload.builder()
-                    .channel(channel)
+                    .channel(slackProperties.getChannel())
                     .username(applicationName)
                     .iconEmoji(":warning:")
                     .text(":warning: *" + title + "*")
@@ -101,7 +98,7 @@ public class SlackAlertService {
                     ))
                     .build();
 
-            slack.send(webhookUrl, payload);
+            slack.send(slackProperties.getWebhookUrl(), payload);
         } catch (Exception e) {
             log.error("Error sending Slack error alert: {}", e.getMessage(), e);
         }
@@ -112,7 +109,7 @@ public class SlackAlertService {
      */
     @Async
     public void sendTaskFailureAlert(ScheduledTask task, String errorMessage) {
-        if (!enabled || webhookUrl == null || webhookUrl.isBlank()) {
+        if (!slackProperties.isEnabled() || slackProperties.getWebhookUrl() == null || slackProperties.getWebhookUrl().isBlank()) {
             return;
         }
 
@@ -123,7 +120,7 @@ public class SlackAlertService {
 
         try {
             var payload = Payload.builder()
-                    .channel(channel)
+                    .channel(slackProperties.getChannel())
                     .username(applicationName)
                     .iconEmoji(":rotating_light:")
                     .text(":rotating_light: *Critical Task Failed*")
@@ -155,7 +152,7 @@ public class SlackAlertService {
                     ))
                     .build();
 
-            slack.send(webhookUrl, payload);
+            slack.send(slackProperties.getWebhookUrl(), payload);
         } catch (Exception e) {
             log.error("Error sending Slack task failure alert: {}", e.getMessage(), e);
         }
@@ -168,7 +165,7 @@ public class SlackAlertService {
         var lastError = task.getLastError() != null ? task.getLastError() : "Unknown error";
 
         return Payload.builder()
-                .channel(channel)
+                .channel(slackProperties.getChannel())
                 .username(applicationName)
                 .iconEmoji(":rotating_light:")
                 .text(":rotating_light: *Task Max Retries Exceeded - Manual Intervention Required*")
@@ -217,9 +214,7 @@ public class SlackAlertService {
     }
 
     private String buildTaskLink(String taskId) {
-        // This would link to your admin dashboard if available
-        // For now, just return a placeholder
-        return String.format("https://admin.yourcompany.com/tasks/%s", taskId);
+        return slackProperties.getDashboardBaseUrl() + "/tasks/" + taskId;
     }
 
     private String truncate(String text, int maxLength) {

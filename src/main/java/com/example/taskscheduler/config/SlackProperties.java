@@ -14,4 +14,5 @@ public class SlackProperties {
     private String webhookUrl;
     private String channel = "#oncall-alerts";
     private boolean enabled = true;
+    private String dashboardBaseUrl = "https://admin.example.com";
 }
