@@ -118,12 +118,8 @@ public class TaskController {
             @Parameter(description = "Cancellation reason") @RequestParam(required = false) String reason) {
         log.info("API: Cancel task {} with reason: {}", taskId, reason);
 
-        try {
-            var response = taskManagementService.cancelTask(taskId, reason);
-            return ResponseEntity.ok(ApiResponse.success(response, "Task cancelled successfully"));
-        } catch (IllegalStateException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        }
+        var response = taskManagementService.cancelTask(taskId, reason);
+        return ResponseEntity.ok(ApiResponse.success(response, "Task cancelled successfully"));
     }
 
     @PostMapping("/{taskId}/pause")
@@ -131,12 +127,8 @@ public class TaskController {
     public ResponseEntity<ApiResponse<TaskResponse>> pauseTask(@Parameter(description = "Task UUID") @PathVariable UUID taskId) {
         log.info("API: Pause task {}", taskId);
 
-        try {
-            var response = taskManagementService.pauseTask(taskId);
-            return ResponseEntity.ok(ApiResponse.success(response, "Task paused successfully"));
-        } catch (IllegalStateException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        }
+        var response = taskManagementService.pauseTask(taskId);
+        return ResponseEntity.ok(ApiResponse.success(response, "Task paused successfully"));
     }
 
     @PostMapping("/{taskId}/resume")
@@ -144,12 +136,8 @@ public class TaskController {
     public ResponseEntity<ApiResponse<TaskResponse>> resumeTask(@Parameter(description = "Task UUID") @PathVariable UUID taskId) {
         log.info("API: Resume task {}", taskId);
 
-        try {
-            var response = taskManagementService.resumeTask(taskId);
-            return ResponseEntity.ok(ApiResponse.success(response, "Task resumed successfully"));
-        } catch (IllegalStateException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        }
+        var response = taskManagementService.resumeTask(taskId);
+        return ResponseEntity.ok(ApiResponse.success(response, "Task resumed successfully"));
     }
 
     @PostMapping("/{taskId}/retry")
@@ -159,18 +147,14 @@ public class TaskController {
             @RequestBody(required = false) RetryTaskRequest request) {
         log.info("API: Retry task {}", taskId);
 
-        try {
-            if (request != null && request.isImmediate()) {
-                var future = taskManagementService.retryTaskNow(taskId);
-                var response = future.join();
-                return ResponseEntity.ok(ApiResponse.success(response, "Task retry executed"));
-            } else {
-                var scheduledTime = request != null ? request.getScheduledTime() : null;
-                var response = taskManagementService.retryTask(taskId, scheduledTime);
-                return ResponseEntity.ok(ApiResponse.success(response, "Task retry scheduled"));
-            }
-        } catch (IllegalStateException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
+        if (request != null && request.isImmediate()) {
+            var future = taskManagementService.retryTaskNow(taskId);
+            var response = future.join();
+            return ResponseEntity.ok(ApiResponse.success(response, "Task retry executed"));
+        } else {
+            var scheduledTime = request != null ? request.getScheduledTime() : null;
+            var response = taskManagementService.retryTask(taskId, scheduledTime);
+            return ResponseEntity.ok(ApiResponse.success(response, "Task retry scheduled"));
         }
     }
 

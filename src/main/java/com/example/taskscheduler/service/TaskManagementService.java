@@ -10,6 +10,9 @@ import com.example.taskscheduler.dto.CreateTaskRequest;
 import com.example.taskscheduler.dto.TaskResponse;
 import com.example.taskscheduler.dto.TaskSearchCriteria;
 import com.example.taskscheduler.dto.TaskStatistics;
+import com.example.taskscheduler.exception.DuplicateTaskException;
+import com.example.taskscheduler.exception.InvalidTaskStateException;
+import com.example.taskscheduler.exception.TaskNotFoundException;
 import com.example.taskscheduler.mapper.TaskMapper;
 import com.example.taskscheduler.service.executor.TaskPollingService;
 import lombok.RequiredArgsConstructor;
@@ -57,12 +60,7 @@ public class TaskManagementService {
             var exists = taskRepository.existsActiveTaskForReference(request.getReferenceId(), request.getTaskType());
             if (exists) {
                 log.warn("Active task already exists for reference {} with type {}", request.getReferenceId(), request.getTaskType());
-
-                // Return existing task
-                var existing = taskRepository.findActiveTaskForReference(request.getReferenceId(), request.getTaskType());
-                if (existing.isPresent()) {
-                    return taskMapper.toResponse(existing.get());
-                }
+                throw new DuplicateTaskException(request.getReferenceId(), request.getTaskType().name());
             }
         }
 
@@ -174,14 +172,14 @@ public class TaskManagementService {
      */
     @Transactional
     public TaskResponse cancelTask(UUID taskId, String reason) {
-        var task = taskRepository.findById(taskId).orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+        var task = taskRepository.findById(taskId).orElseThrow(() -> new TaskNotFoundException(taskId));
 
         if (task.getStatus().isTerminal()) {
-            throw new IllegalStateException("Cannot cancel task in terminal state: " + task.getStatus());
+            throw new InvalidTaskStateException(taskId.toString(), task.getStatus().name(), TaskStatus.CANCELLED.name());
         }
 
         if (task.isLocked()) {
-            throw new IllegalStateException("Cannot cancel task that is currently being processed");
+            throw new InvalidTaskStateException(taskId.toString(), task.getStatus().name() + " (locked)", TaskStatus.CANCELLED.name());
         }
 
         task.setStatus(TaskStatus.CANCELLED);
@@ -199,14 +197,14 @@ public class TaskManagementService {
      */
     @Transactional
     public TaskResponse pauseTask(UUID taskId) {
-        var task = taskRepository.findById(taskId).orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+        var task = taskRepository.findById(taskId).orElseThrow(() -> new TaskNotFoundException(taskId));
 
         if (task.getStatus().isTerminal()) {
-            throw new IllegalStateException("Cannot pause task in terminal state: " + task.getStatus());
+            throw new InvalidTaskStateException(taskId.toString(), task.getStatus().name(), TaskStatus.PAUSED.name());
         }
 
         if (task.isLocked()) {
-            throw new IllegalStateException("Cannot pause task that is currently being processed");
+            throw new InvalidTaskStateException(taskId.toString(), task.getStatus().name() + " (locked)", TaskStatus.PAUSED.name());
         }
 
         task.setStatus(TaskStatus.PAUSED);
@@ -221,10 +219,10 @@ public class TaskManagementService {
      */
     @Transactional
     public TaskResponse resumeTask(UUID taskId) {
-        var task = taskRepository.findById(taskId).orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+        var task = taskRepository.findById(taskId).orElseThrow(() -> new TaskNotFoundException(taskId));
 
         if (task.getStatus() != TaskStatus.PAUSED) {
-            throw new IllegalStateException("Can only resume paused tasks, current status: " + task.getStatus());
+            throw new InvalidTaskStateException(taskId.toString(), task.getStatus().name(), TaskStatus.PENDING.name());
         }
 
         task.setStatus(TaskStatus.PENDING);
@@ -240,11 +238,10 @@ public class TaskManagementService {
      */
     @Transactional
     public TaskResponse retryTask(UUID taskId, Instant scheduledTime) {
-        var task = taskRepository.findById(taskId).orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+        var task = taskRepository.findById(taskId).orElseThrow(() -> new TaskNotFoundException(taskId));
 
         if (!task.getStatus().isFailure() && task.getStatus() != TaskStatus.PAUSED) {
-            throw new IllegalStateException(
-                    "Can only retry failed or paused tasks, current status: " + task.getStatus());
+            throw new InvalidTaskStateException(taskId.toString(), task.getStatus().name(), TaskStatus.RETRY_PENDING.name());
         }
 
         task.setStatus(TaskStatus.RETRY_PENDING);
@@ -261,11 +258,12 @@ public class TaskManagementService {
     /**
      * Retry task immediately
      */
+    @Transactional
     public CompletableFuture<TaskResponse> retryTaskNow(UUID taskId) {
-        var task = taskRepository.findById(taskId).orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+        var task = taskRepository.findById(taskId).orElseThrow(() -> new TaskNotFoundException(taskId));
 
         if (!task.getStatus().isFailure() && task.getStatus() != TaskStatus.PAUSED) {
-            throw new IllegalStateException("Can only retry failed or paused tasks, current status: " + task.getStatus());
+            throw new InvalidTaskStateException(taskId.toString(), task.getStatus().name(), TaskStatus.PENDING.name());
         }
 
         // Reset task for immediate retry

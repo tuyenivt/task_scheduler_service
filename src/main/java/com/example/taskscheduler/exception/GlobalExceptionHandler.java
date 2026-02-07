@@ -1,6 +1,7 @@
 package com.example.taskscheduler.exception;
 
 import com.example.taskscheduler.dto.ApiResponse;
+import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -40,6 +41,38 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(message));
     }
 
+    @ExceptionHandler(TaskNotFoundException.class)
+    public ResponseEntity<ApiResponse<Void>> handleTaskNotFound(TaskNotFoundException ex) {
+        log.warn("Task not found: {}", ex.getMessage());
+
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(ex.getMessage()));
+    }
+
+    @ExceptionHandler(DuplicateTaskException.class)
+    public ResponseEntity<ApiResponse<Void>> handleDuplicateTask(DuplicateTaskException ex) {
+        log.warn("Duplicate task: {}", ex.getMessage());
+
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidTaskStateException.class)
+    public ResponseEntity<ApiResponse<Void>> handleInvalidTaskState(InvalidTaskStateException ex) {
+        log.warn("Invalid task state: {}", ex.getMessage());
+
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(ex.getMessage()));
+    }
+
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleConstraintViolation(ConstraintViolationException ex) {
+        var errors = ex.getConstraintViolations().stream()
+                .map(v -> v.getPropertyPath() + ": " + v.getMessage())
+                .toList();
+
+        log.warn("Constraint violation: {}", errors);
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error("Validation failed", errors));
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiResponse<Void>> handleIllegalArgument(IllegalArgumentException ex) {
         log.warn("Bad request: {}", ex.getMessage());
@@ -58,9 +91,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleExternalServiceException(ExternalServiceException ex) {
         log.error("External service error: {}", ex.getMessage());
 
-        var status = ex.getHttpStatusCode() != null ? HttpStatus.valueOf(ex.getHttpStatusCode()) : HttpStatus.SERVICE_UNAVAILABLE;
-
-        return ResponseEntity.status(status).body(ApiResponse.error("External service error: " + ex.getMessage()));
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error("External service error: " + ex.getMessage()));
     }
 
     @ExceptionHandler(Exception.class)
