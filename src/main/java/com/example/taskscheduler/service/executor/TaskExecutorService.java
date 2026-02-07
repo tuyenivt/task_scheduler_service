@@ -12,6 +12,7 @@ import com.example.taskscheduler.service.handler.TaskExecutionResult;
 import com.example.taskscheduler.service.handler.TaskHandlerRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -74,6 +75,22 @@ public class TaskExecutorService {
      */
     @Transactional
     public boolean executeTask(ScheduledTask task) {
+        var taskId = task.getId().toString();
+
+        MDC.put("taskId", taskId);
+        MDC.put("taskType", task.getTaskType().name());
+        MDC.put("referenceId", task.getReferenceId());
+
+        try {
+            return doExecuteTask(task);
+        } finally {
+            MDC.remove("taskId");
+            MDC.remove("taskType");
+            MDC.remove("referenceId");
+        }
+    }
+
+    private boolean doExecuteTask(ScheduledTask task) {
         var taskId = task.getId().toString();
 
         // Re-fetch task within this transaction to get current state after lock acquisition

@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Handler for ORDER_CANCEL tasks.
@@ -124,18 +125,23 @@ public class OrderCancelHandler implements TaskHandler {
         // Check if metadata specifies custom retry behavior
         var customDelayHours = task.getMetadataValue("retryDelayHours", Integer.class);
         if (customDelayHours != null) {
-            return customDelayHours * 60L * 60L * 1000L;
+            return addJitter(customDelayHours * 60L * 60L * 1000L);
         }
 
         // Use exponential backoff for the first few retries, then default to next day
         var retryCount = task.getRetryCount();
         if (retryCount < 3) {
             // 1 hour, 2 hours, 4 hours for first 3 retries
-            return (long) Math.pow(2, retryCount) * 60L * 60L * 1000L;
+            return addJitter((long) Math.pow(2, retryCount) * 60L * 60L * 1000L);
         }
 
         // After 3 retries, switch to daily retries
-        return defaultDelayHours * 60L * 60L * 1000L;
+        return addJitter(defaultDelayHours * 60L * 60L * 1000L);
+    }
+
+    private long addJitter(long baseDelayMs) {
+        long jitter = ThreadLocalRandom.current().nextLong(baseDelayMs / 10, baseDelayMs / 4 + 1);
+        return baseDelayMs + jitter;
     }
 
     private String getPayloadString(ScheduledTask task, String key, String defaultValue) {

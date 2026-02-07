@@ -154,7 +154,7 @@ logging:
     org.springframework.transaction: INFO
     org.hibernate.SQL: ${HIBERNATE_SQL_LOG:WARN}
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [taskId=%X{taskId} taskType=%X{taskType} ref=%X{referenceId}] - %msg%n"
 
 springdoc:
   api-docs:
