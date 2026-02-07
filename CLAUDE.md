@@ -14,11 +14,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run tests
 ./gradlew test
 
+# Run unit tests only (excludes integration tests requiring Docker)
+./gradlew test --tests "com.example.taskscheduler.service.*" --tests "com.example.taskscheduler.domain.*"
+
 # Run a single test class
-./gradlew test --tests "com.example.taskscheduler.TaskManagementServiceTest"
+./gradlew test --tests "com.example.taskscheduler.service.TaskManagementServiceTest"
 
 # Run a single test method
-./gradlew test --tests "com.example.taskscheduler.TaskManagementServiceTest.TaskCreationTests.shouldCreateTaskSuccessfully"
+./gradlew test --tests "com.example.taskscheduler.service.TaskManagementServiceTest.TaskCreationTests.shouldCreateTaskSuccessfully"
 ```
 
 ## Architecture Overview
@@ -27,7 +30,7 @@ This is a distributed task scheduler service (Java 21 / Spring Boot 3.5 / Postgr
 
 ### Core Processing Pipeline
 
-**TaskPollingService** (ShedLock-gated) polls on a fixed delay, fetches a batch of ready tasks using `FOR UPDATE SKIP LOCKED`, then dispatches each to **TaskExecutorService** via a virtual thread executor (`Executors.newThreadPerTaskExecutor`). The executor acquires a per-task optimistic lock (version field), resolves the handler from **TaskHandlerRegistry**, and manages the full lifecycle: validation, execution, success/failure/retry handling, metrics, and Slack alerting.
+**TaskPollingService** (ShedLock-gated) polls on a fixed delay, fetches a batch of ready tasks using `FOR UPDATE SKIP LOCKED`, then dispatches each to **TaskExecutorService** via a virtual thread executor (`Executors.newThreadPerTaskExecutor`). The executor acquires a per-task optimistic lock (version field), resolves the handler from **TaskHandlerRegistry**, and manages the full lifecycle: validation, execution, success/failure/retry handling, metrics, MDC structured logging, and Slack alerting. Graceful shutdown waits up to 30s for in-flight tasks to complete.
 
 ### Task Handler Pattern
 
@@ -36,7 +39,7 @@ To add a new task type:
 2. Create a `@Component` implementing `TaskHandler` (must return `getTaskType()` and implement `execute()`)
 3. It auto-registers via `TaskHandlerRegistry` (Spring bean discovery at `@PostConstruct`)
 
-Existing handlers: `OrderCancelHandler`, `PaymentRefundHandler`, `PaymentVoidHandler` -- each calls an external service via WebClient with Resilience4j circuit breakers.
+Existing handlers: `OrderCancelHandler`, `PaymentRefundHandler`, `PaymentVoidHandler` -- each calls an external service via WebClient with Resilience4j circuit breakers. Retry delays use exponential backoff with 10-25% jitter to prevent thundering herd.
 
 ### Distributed Locking Strategy
 
@@ -49,14 +52,26 @@ A stale task cleanup job (`cleanupStaleTasks`) periodically resets orphaned lock
 
 ### Key Packages
 
-- `controller` - Single REST controller (`/api/v1/tasks`) for CRUD, status management, bulk ops, statistics
+- `controller` - Single REST controller (`/api/v1/tasks`) for CRUD, status management, bulk ops, statistics. Uses `@Validated` for bean validation on request bodies and list items.
 - `service` - `TaskManagementService` (API-facing CRUD/lifecycle), `executor/` (polling + execution), `handler/` (per-type business logic), `alert/` (Slack)
 - `domain/entity` - `ScheduledTask` (JSONB payload/metadata columns), `TaskExecutionLog`
 - `domain/enums` - `TaskStatus` (11 states, `isExecutable()`/`isTerminal()`/`isFailure()` helpers), `TaskType`, `TaskPriority`
 - `domain/repository` - JPA repos with native SQL for SKIP LOCKED queries and JSONB filtering
-- `config` - Virtual thread executors (`AsyncConfig`), ShedLock, Resilience4j circuit breakers, Micrometer metrics
+- `config` - Virtual thread executors (`AsyncConfig`), ShedLock, Resilience4j circuit breakers, Micrometer metrics, `SlackProperties` (configurable dashboard URL)
 - `mapper` - MapStruct mapper (`TaskMapper`) for entity/DTO conversion
 - `client` - WebClient-based clients for Order Service and Payment Service
+- `exception` - Domain exceptions (`TaskNotFoundException` -> 404, `DuplicateTaskException` -> 409, `InvalidTaskStateException` -> 409) with `GlobalExceptionHandler`
+
+### Error Handling
+
+Domain exceptions flow through `GlobalExceptionHandler`:
+- `TaskNotFoundException` -> 404 Not Found
+- `DuplicateTaskException` -> 409 Conflict (when `preventDuplicates=true`)
+- `InvalidTaskStateException` -> 409 Conflict (invalid state transitions)
+- `ExternalServiceException` -> 502 Bad Gateway (upstream failures never leak to client)
+- `ConstraintViolationException` -> 400 Bad Request (bean validation on `@Validated` controller)
+
+The controller does NOT catch exceptions locally -- all exception-to-HTTP mapping is centralized in `GlobalExceptionHandler`.
 
 ### Database
 
@@ -73,8 +88,15 @@ PENDING/SCHEDULED/FAILED/RETRY_PENDING are executable states. Terminal states: C
 
 ### Configuration
 
-All configurable via environment variables with defaults in `application.yml`. Key properties live under `task-scheduler.*` prefix (poll interval, batch size, executor pool size, retry defaults, lock durations). External service URLs under `external-services.*`. Resilience4j circuit breakers configured per external service.
+All configurable via environment variables with defaults in `application.yml`. Key properties live under `task-scheduler.*` prefix (poll interval, batch size, executor pool size, retry defaults, lock durations). External service URLs under `external-services.*`. Resilience4j circuit breakers configured per external service. Slack properties include configurable `dashboard-base-url` for alert links.
+
+### Observability
+
+- MDC structured logging with `taskId`, `taskType`, and `referenceId` context on every task execution
+- Log pattern includes MDC fields: `[taskId=%X{taskId} taskType=%X{taskType} ref=%X{referenceId}]`
+- Micrometer metrics for task counts, execution time, failures, retries
+- Prometheus endpoint at `/actuator/prometheus`
 
 ### Testing
 
-Tests use Mockito with `@ExtendWith(MockitoExtension.class)`. Testcontainers dependencies are available for PostgreSQL integration tests. Assertions use AssertJ.
+Tests use Mockito with `@ExtendWith(MockitoExtension.class)`. Testcontainers dependencies are available for PostgreSQL integration tests (require Docker). Assertions use AssertJ. Handler tests cover execution success/failure paths, validation, retry delay calculations with jitter, and HTTP error code mapping.

@@ -7,10 +7,14 @@ A high-volume, distributed task scheduler service for back-office operations bui
 - **Virtual Threads (Java 21)**: High-concurrency task processing with minimal resource overhead
 - **Distributed Task Locking**: PostgreSQL `FOR UPDATE SKIP LOCKED` prevents duplicate task processing across multiple instances
 - **Flexible Task Types**: Extensible handler pattern for different task types (order cancellation, payment refunds, etc.)
-- **Configurable Retry Logic**: Per-task retry configuration with default next-day retry
+- **Configurable Retry Logic**: Per-task retry configuration with exponential backoff and jitter to prevent thundering herd
 - **Comprehensive Status Management**: Full task lifecycle (pending, processing, completed, failed, paused, etc.)
-- **Slack Alerting**: Automatic alerts when tasks exceed max retries
+- **Domain Exception Handling**: Proper HTTP status codes (404 for not found, 409 for duplicates/invalid state, 502 for upstream failures)
+- **Graceful Shutdown**: Waits for in-flight tasks to complete before stopping (30s timeout)
+- **Structured Logging**: MDC context with taskId, taskType, and referenceId on every task execution
+- **Slack Alerting**: Automatic alerts with configurable dashboard links when tasks exceed max retries
 - **Metrics & Observability**: Prometheus metrics, health checks, execution logging
+- **Input Validation**: Bean validation on all API inputs including batch operations and bulk requests
 - **Custom Metadata Support**: JSONB fields for task-specific data and control parameters
 - **API Management**: REST API for task creation, monitoring, and manual intervention
 
@@ -100,22 +104,23 @@ A high-volume, distributed task scheduler service for back-office operations bui
 
 ### Environment Variables
 
-| Variable                    | Description                 | Default        |
-|-----------------------------|-----------------------------|----------------|
-| `DB_HOST`                   | PostgreSQL host             | localhost      |
-| `DB_PORT`                   | PostgreSQL port             | 5432           |
-| `DB_NAME`                   | Database name               | taskscheduler  |
-| `DB_USERNAME`               | Database user               | postgres       |
-| `DB_PASSWORD`               | Database password           | postgres       |
-| `POLL_INTERVAL_MS`          | Task polling interval (ms)  | 30000          |
-| `TASK_BATCH_SIZE`           | Max tasks per poll          | 100            |
-| `EXECUTOR_POOL_SIZE`        | Concurrent executors        | 20             |
-| `DEFAULT_MAX_RETRIES`       | Default retry limit         | 5              |
-| `DEFAULT_RETRY_DELAY_HOURS` | Default retry delay (hours) | 24             |
-| `SLACK_WEBHOOK_URL`         | Slack webhook for alerts    | -              |
-| `SLACK_CHANNEL`             | Alert channel               | #oncall-alerts |
-| `ORDER_SERVICE_URL`         | Order Service base URL      | -              |
-| `PAYMENT_SERVICE_URL`       | Payment Service base URL    | -              |
+| Variable                    | Description                 | Default                   |
+|-----------------------------|-----------------------------|---------------------------|
+| `DB_HOST`                   | PostgreSQL host             | localhost                 |
+| `DB_PORT`                   | PostgreSQL port             | 5432                      |
+| `DB_NAME`                   | Database name               | taskscheduler             |
+| `DB_USERNAME`               | Database user               | postgres                  |
+| `DB_PASSWORD`               | Database password           | postgres                  |
+| `POLL_INTERVAL_MS`          | Task polling interval (ms)  | 30000                     |
+| `TASK_BATCH_SIZE`           | Max tasks per poll          | 100                       |
+| `EXECUTOR_POOL_SIZE`        | Concurrent executors        | 20                        |
+| `DEFAULT_MAX_RETRIES`       | Default retry limit         | 5                         |
+| `DEFAULT_RETRY_DELAY_HOURS` | Default retry delay (hours) | 24                        |
+| `SLACK_WEBHOOK_URL`         | Slack webhook for alerts    | -                         |
+| `SLACK_CHANNEL`             | Alert channel               | #oncall-alerts            |
+| `DASHBOARD_BASE_URL`        | Admin dashboard base URL    | https://admin.example.com |
+| `ORDER_SERVICE_URL`         | Order Service base URL      | -                         |
+| `PAYMENT_SERVICE_URL`       | Payment Service base URL    | -                         |
 
 ## API Usage
 
@@ -167,8 +172,8 @@ curl http://localhost:8080/api/v1/tasks/{taskId}
 # Get task with execution history
 curl "http://localhost:8080/api/v1/tasks/{taskId}?includeHistory=true"
 
-# Search tasks
-curl "http://localhost:8080/api/v1/tasks?taskType=ORDER_CANCEL&status=FAILED&page=0&size=20"
+# Search tasks (supports taskType, status, referenceId filters; page size capped at 100)
+curl "http://localhost:8080/api/v1/tasks?taskType=ORDER_CANCEL&status=FAILED&referenceId=ORD-12345&page=0&size=20"
 
 # Get tasks by reference
 curl http://localhost:8080/api/v1/tasks/reference/ORD-12345
@@ -250,6 +255,16 @@ public class MyCustomHandler implements TaskHandler {
     }
 }
 ```
+
+## Error Responses
+
+| HTTP Status | When                                                         |
+|-------------|--------------------------------------------------------------|
+| 400         | Validation errors, invalid request parameters                |
+| 404         | Task not found                                               |
+| 409         | Duplicate task (preventDuplicates), invalid state transition |
+| 502         | External service (Order/Payment) failure                     |
+| 500         | Unexpected server error                                      |
 
 ## Distributed Processing
 
